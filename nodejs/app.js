@@ -14,13 +14,17 @@ const db = new sqlite3.Database("../database.db", sqlite3.OPEN_READONLY, (err) =
 // Return all messages
 app.get("/messages", (req, res) => {    
 
-    const updateStates = (stateIds, msgMatches) => {
-        
+    const updateStates = (stateIds, msgMatches) => {        
         // Get states from DB for all stateIds
         db.all(
             `select id, value from state where id in (${stateIds.map(function(){ return "?" }).join(",")})`, 
             stateIds, 
             (err, rows) => {
+                if (err) {
+                    res.status(400).send(err.message)
+                    return
+                }
+
                 messages = msgMatches.map(msgMatch => {
 
                     let message = msgMatch.message
@@ -35,7 +39,7 @@ app.get("/messages", (req, res) => {
                         if (!found) {
                             message = message.split(match[0]).join(match[2])
                         }
-                    });
+                    })
 
                     return message
                 })
@@ -43,13 +47,18 @@ app.get("/messages", (req, res) => {
         })
     }
 
-    db.all("select body from messages", {}, (err, rows) => {	
+    db.all("select body from messages", {}, (err, rows) => {        
+        if (err) {
+            res.status(400).send(err.message)
+            return
+        }	
+
         // Use regex to match {stateId|fallback}
-        const regexp = /{([0-9a-f]{32})\|([\w ]*)}/g 	
+        const regexp = /{([0-9a-f]{32})\|([^{}]*)}/g 	
 
         // To reduce calls to the db, store all stateIds in an array and 
         // query state table only once to get all the states we need
-        const stateIds = [];
+        const stateIds = []
         msgMatches = rows.map(row => {
             const matches = [...row.body.matchAll(regexp)]
             const uniqueMatches = matches.filter(
@@ -70,7 +79,7 @@ app.post("/search", (req, res) => {
     const query = req.body.query
     // Check for empty or just whitespaces
     if (!query || /^\s*$/.test(query)) {
-        res.status(400).send('Invalid query')
+        res.status(400).send("Invalid query")
         return
     }
     
@@ -78,10 +87,13 @@ app.post("/search", (req, res) => {
 
     // Recursive function to search in the nested content block fields
     const hasQuery = (query, node) => {
+        if (!node) {
+            return false
+        }
         if (Array.isArray(node)) {
             return node.some(val => hasQuery(query, val))
         }
-        if (typeof node === 'string' || node instanceof String) {
+        if (typeof node === "string" || node instanceof String) {
             return node.toLowerCase().includes(query)
         }
 
@@ -93,27 +105,33 @@ app.post("/search", (req, res) => {
     db.all(
         "select a.id, a.title, b.content from answers a join blocks b on a.id = b.answer_id where title like $query or content like $query",
         { $query: "%" + queries[0] + "%" }, // Check for first word in search query to return fewer rows from the DB while keeping it speedy
-        (err, rows_raw) => {
+        (err, rows_raw) => {            
+            if (err) {
+                res.status(400).send(err.message)
+                return
+            }
+
             const answers = rows_raw
                 .map(row => { 
                     return {...row, contentStr: row.content, content: JSON.parse(row.content)} 
                 })
                 .filter(answer => {
                     // Not using regex in case there are special characters in any of the queries 
-                    // In order to use regex, we'll have to escape all possible special characters, so simpler to just do lowercase 
-                    const title = answer.title.toLowerCase();
+                    // In order to use regex, we'll have to escape all possible special characters, 
+                    // so better to just do lowercase for a case-insensitive compare
+                    const title = answer.title.toLowerCase()
                     const content = answer.contentStr.toLowerCase()
                     
                     return queries.every(query => {
                         if (title.includes(query)) {
-                            return true;
+                            return true
                         }
                         // Only do the recursive search within content when we're sure the query can be found in it
                         // because the recursive search is an expensive procedure
                         if (content.includes(query)) {
-                            return hasQuery(query, answer.content);
+                            return hasQuery(query, answer.content)
                         }
-                        return false;
+                        return false
                     })
                 })
                 .map(({ contentStr, ...answer }) => answer)
